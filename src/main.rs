@@ -18,7 +18,8 @@ async fn main() -> rsrcon::rcon::RconResult<()> {
 
     let ip_string = args
         .address
-        .unwrap_or(std::env::var("RCON_ADDRESS").unwrap_or("127.0.0.1:25575".to_owned()));
+        .or_else(|| std::env::var("RCON_ADDRESS").ok())
+        .unwrap_or_else(|| "127.0.0.1:25575".to_owned());
     let (ip, port) = ip_string.split_once(":").unwrap_or((&ip_string, "25575"));
 
     let ip =
@@ -28,7 +29,8 @@ async fn main() -> rsrcon::rcon::RconResult<()> {
 
     let password = &args
         .password
-        .unwrap_or(std::env::var("RCON_PASSWORD").unwrap_or("".to_string()));
+        .or_else(|| std::env::var("RCON_PASSWORD").ok())
+        .unwrap_or_default();
 
     rcon.authenticate(password).await?;
 
