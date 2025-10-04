@@ -33,7 +33,6 @@ async fn main() -> rsrcon::rcon::RconResult<()> {
         .unwrap_or_default();
 
     rcon.authenticate(password).await?;
-    println!("authenticate");
 
     let resp_parts = rcon.exec_cmd(&args.cmd.join(" ")).await?;
 
