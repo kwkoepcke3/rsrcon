@@ -1,8 +1,9 @@
-use std::net::Ipv4Addr;
+use std::{fmt, net::Ipv4Addr, time::Duration};
 
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
+    time::timeout,
 };
 
 const MIN_PACKET_SIZE: usize = 10;
@@ -11,31 +12,78 @@ const EXT_RESP_ID: i32 = 42;
 const SIZE_ID: usize = 4;
 const SIZE_VARIANT: usize = 4;
 const SIZE_TERMINATOR: usize = 1;
-
+const TIMEOUT_DURATION: Duration = Duration::from_secs(5);
 pub struct Rcon {
     stream: TcpStream,
 }
 
+#[derive(Debug)]
+pub enum TimeoutType {
+    InitialConnection,
+    Authenticate,
+    Exec,
+}
+
+#[derive(Debug)]
+pub enum RconError {
+    Timeout(TimeoutType),
+    IoError,
+    GenericError(String),
+    AuthenticationError,
+}
+
+pub type RconResult<T> = Result<T, RconError>;
+
+impl fmt::Display for RconError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let action = match self {
+            RconError::Timeout(timeout_type) => {
+                let timeout_type = match timeout_type {
+                    TimeoutType::Authenticate => "Authenticate",
+                    TimeoutType::Exec => "Execute Command",
+                    TimeoutType::InitialConnection => "Initial Connection",
+                };
+                writeln!(
+                    f,
+                    "Timeout after {}s during action: {timeout_type}",
+                    TIMEOUT_DURATION.as_secs()
+                )
+            }
+            RconError::IoError => writeln!(f, "Error with: Tcp socket IO"),
+            RconError::GenericError(e) => writeln!(f, "Error because of: {e}"),
+            RconError::AuthenticationError => writeln!(f, "Could not authenticate!"),
+        };
+        action
+    }
+}
+
 impl Rcon {
-    pub async fn from(ip: Ipv4Addr, port: &str) -> Result<Rcon, Box<dyn std::error::Error>> {
-        let stream = TcpStream::connect(format!("{ip}:{port}")).await?;
+    pub async fn from(ip: Ipv4Addr, port: &str) -> RconResult<Rcon> {
+        let stream = timeout(TIMEOUT_DURATION, TcpStream::connect(format!("{ip}:{port}")))
+            .await
+            .map_err(|_| RconError::Timeout(TimeoutType::InitialConnection))?
+            .map_err(|_| RconError::IoError)?;
 
         return Ok(Rcon { stream });
     }
 
-    pub async fn authenticate(
-        &mut self,
-        password: &str,
-    ) -> Result<BasicPacket, Box<dyn std::error::Error>> {
-        authenticate(&mut self.stream, password).await
+    pub async fn authenticate(&mut self, password: &str) -> RconResult<BasicPacket> {
+        let packet = timeout(TIMEOUT_DURATION, authenticate(&mut self.stream, password))
+            .await
+            .map_err(|_| RconError::Timeout(TimeoutType::Authenticate))??;
+
+        Ok(packet)
     }
 
-    pub async fn exec_cmd(
-        &mut self,
-        cmd: &str,
-    ) -> Result<Vec<BasicPacket>, Box<dyn std::error::Error>> {
+    pub async fn exec_cmd(&mut self, cmd: &str) -> RconResult<Vec<BasicPacket>> {
         let mut packets = vec![];
-        packets.push(exec_cmd(&mut self.stream, cmd).await?);
+
+        let packet = timeout(TIMEOUT_DURATION, exec_cmd(&mut self.stream, cmd))
+            .await
+            .map_err(|e| RconError::GenericError(e.to_string()))?
+            .map_err(|e| RconError::GenericError(e.to_string()))?;
+
+        packets.push(packet);
 
         let empty = BasicPacket {
             id: EXT_RESP_ID,
@@ -43,11 +91,24 @@ impl Rcon {
             body: vec![],
         };
 
-        self.stream.write_all(&Vec::<u8>::from(empty)[..]).await?;
-        self.stream.flush().await?;
+        timeout(
+            TIMEOUT_DURATION,
+            self.stream.write_all(&Vec::<u8>::from(empty)[..]),
+        )
+        .await
+        .map_err(|_| RconError::Timeout(TimeoutType::Exec))?
+        .map_err(|_| RconError::IoError)?;
+
+        timeout(TIMEOUT_DURATION, self.stream.flush())
+            .await
+            .map_err(|_| RconError::Timeout(TimeoutType::Exec))?
+            .map_err(|_| RconError::IoError)?;
 
         loop {
-            let packet = read_packet(&mut self.stream).await?;
+            let packet = timeout(TIMEOUT_DURATION, read_packet(&mut self.stream))
+                .await
+                .map_err(|_| RconError::Timeout(TimeoutType::Exec))?
+                .map_err(|e| RconError::GenericError(e.to_string()))?;
             if packet.id == EXT_RESP_ID {
                 break;
             }
@@ -58,7 +119,7 @@ impl Rcon {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct BasicPacket {
     pub id: i32,
     pub variant: i32,
@@ -128,20 +189,30 @@ fn basic_packet_to_bytes(packet: BasicPacket) -> Vec<u8> {
     return (&buf[..i_body_end + 2]).to_vec();
 }
 
-async fn authenticate(
-    stream: &mut TcpStream,
-    password: &str,
-) -> Result<BasicPacket, Box<dyn std::error::Error>> {
+async fn authenticate(stream: &mut TcpStream, password: &str) -> RconResult<BasicPacket> {
     let auth_packet = BasicPacket {
         id: STANDARD_ID,
         variant: 3,
         body: password.into(),
     };
 
-    stream.write_all(&Vec::<u8>::from(auth_packet)[..]).await?;
-    stream.flush().await?;
+    stream
+        .write_all(&Vec::<u8>::from(auth_packet)[..])
+        .await
+        .map_err(|_| RconError::IoError)?;
+    stream.flush().await.map_err(|_| RconError::IoError)?;
 
-    read_packet(stream).await
+    let status = read_packet(stream).await.map_err(|_| RconError::IoError)?;
+    assert!(
+        status.variant == 2,
+        "RECEIVED WRONG RESPONSE AS PACKET AFTER AUTH"
+    );
+
+    if status.id == -1 {
+        return Err(RconError::AuthenticationError);
+    } else {
+        return Ok(status);
+    }
 }
 
 async fn exec_cmd(

@@ -13,7 +13,7 @@ struct CliArgs {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> rsrcon::rcon::RconResult<()> {
     let args = CliArgs::parse();
 
     let ip_string = args
@@ -21,7 +21,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(std::env::var("RCON_ADDRESS").unwrap_or("127.0.0.1:25575".to_owned()));
     let (ip, port) = ip_string.split_once(":").unwrap_or((&ip_string, "25575"));
 
-    let ip = Ipv4Addr::from_str(ip)?;
+    let ip =
+        Ipv4Addr::from_str(ip).map_err(|e| rsrcon::rcon::RconError::GenericError(e.to_string()))?;
 
     let mut rcon = rsrcon::rcon::Rcon::from(ip, port).await?;
 
@@ -39,7 +40,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect::<Vec<Vec<u8>>>()
         .concat();
 
-    let resp_string = std::str::from_utf8(&resp)?;
+    let resp_string = std::str::from_utf8(&resp)
+        .map_err(|e| rsrcon::rcon::RconError::GenericError(e.to_string()))?;
 
     println!("{resp_string}");
 
