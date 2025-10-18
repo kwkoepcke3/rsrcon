@@ -12,8 +12,7 @@ struct CliArgs {
     address: Option<String>,
 }
 
-#[tokio::main]
-async fn main() -> rsrcon::rcon::RconResult<()> {
+async fn run() -> rsrcon::rcon::RconResult<()> {
     let args = CliArgs::parse();
 
     let ip_string = args
@@ -48,4 +47,13 @@ async fn main() -> rsrcon::rcon::RconResult<()> {
     println!("{resp_string}");
 
     return Ok(());
+}
+
+#[tokio::main]
+async fn main() {
+    let result = run().await;
+    match result {
+        Ok(()) => {}
+        Err(e) => println!("{e}"),
+    }
 }

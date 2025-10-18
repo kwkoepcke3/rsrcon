@@ -24,12 +24,16 @@ pub enum TimeoutType {
     Exec,
 }
 
+type Port = String;
+type Address = String;
+
 #[derive(Debug)]
 pub enum RconError {
     Timeout(TimeoutType),
     IoError,
     GenericError(String),
     AuthenticationError,
+    InitialConnectionError(Port, Address),
 }
 
 pub type RconResult<T> = Result<T, RconError>;
@@ -49,6 +53,12 @@ impl fmt::Display for RconError {
                     TIMEOUT_DURATION.as_secs()
                 )
             }
+            RconError::InitialConnectionError(p, a) => {
+                writeln!(
+                    f,
+                    "Error with initial connection! Is the port {p} open at address {a}?"
+                )
+            }
             RconError::IoError => writeln!(f, "Error with: Tcp socket IO"),
             RconError::GenericError(e) => writeln!(f, "Error because of: {e}"),
             RconError::AuthenticationError => writeln!(f, "Could not authenticate!"),
@@ -62,7 +72,7 @@ impl Rcon {
         let stream = timeout(TIMEOUT_DURATION, TcpStream::connect(format!("{ip}:{port}")))
             .await
             .map_err(|_| RconError::Timeout(TimeoutType::InitialConnection))?
-            .map_err(|_| RconError::IoError)?;
+            .map_err(|_| RconError::InitialConnectionError(port.to_owned(), ip.to_string()))?;
 
         return Ok(Rcon { stream });
     }
